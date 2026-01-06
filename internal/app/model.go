@@ -19,6 +19,7 @@ const (
 	ModeNotes
 	ModeLookup
 	ModeSignal
+	ModeOpenFile
 )
 
 type LevelFilter int
@@ -105,7 +106,8 @@ type State struct {
 	Entries  []logx.Entry
 	Filtered []int
 
-	Cursor int
+	Cursor   int
+	Selected map[int]bool
 
 	FilterQuery string
 	LevelFilter LevelFilter
@@ -125,8 +127,17 @@ type State struct {
 	LookupResults []lookup.StatusInfo
 	LookupCursor  int
 
-	DetailScroll  int
-	SignalResult  *signal.SignalResult
+	DetailScroll    int
+	DetailMaximized bool
+	SignalResult    *signal.SignalResult
+
+	OpenFilePath        string
+	OpenFileCursor      int
+	OpenFileSuggestions []string
+	OpenFileSuggIdx     int
+
+	UndoStack [][]int
+	RedoStack [][]int
 
 	PrevMode Mode
 
@@ -150,6 +161,7 @@ func NewState(entries []logx.Entry, inputMode input.Mode, fileName string) *Stat
 		Notes:        make(map[int]Note),
 		NoteLineIdx:  -1,
 		ShowingNotes: make(map[int]bool),
+		Selected:     make(map[int]bool),
 	}
 }
 
@@ -227,15 +239,6 @@ func (s *State) MoveCursor(delta int) {
 	s.DetailScroll = 0
 }
 
-func (s *State) DeleteSelected() {
-	if len(s.Filtered) == 0 {
-		return
-	}
-	idx := s.Filtered[s.Cursor]
-	s.Entries[idx].Deleted = true
-	s.Refilter()
-}
-
 func (s *State) ClearAll() {
 	for i := range s.Entries {
 		s.Entries[i].Deleted = true
@@ -250,6 +253,21 @@ func (s *State) LoadFromClipboard(lines []string) {
 	s.Refilter()
 	s.Cursor = 0
 	s.StatusMsg = ""
+}
+
+func (s *State) LoadFromFile(path string) error {
+	lines, err := input.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	s.Entries = logx.ParseLines(lines)
+	s.InputMode = input.ModeFile
+	s.FileName = path
+	s.FilterQuery = ""
+	s.Refilter()
+	s.Cursor = 0
+	s.StatusMsg = ""
+	return nil
 }
 
 func (s *State) UpdateLookup() {
@@ -432,4 +450,125 @@ func (s *State) AllNotesText() string {
 		result += "Line " + itoa(idx+1) + ": " + levelStr + note.Text + "\n"
 	}
 	return result
+}
+
+func (s *State) ToggleSelection(idx int) {
+	if s.Selected[idx] {
+		delete(s.Selected, idx)
+	} else {
+		s.Selected[idx] = true
+	}
+}
+
+func (s *State) IsSelected(idx int) bool {
+	return s.Selected[idx]
+}
+
+func (s *State) SelectionCount() int {
+	return len(s.Selected)
+}
+
+func (s *State) ClearSelection() {
+	s.Selected = make(map[int]bool)
+}
+
+func (s *State) SelectAll() {
+	for _, idx := range s.Filtered {
+		s.Selected[idx] = true
+	}
+}
+
+func (s *State) SelectedIndices() []int {
+	var indices []int
+	for idx := range s.Selected {
+		indices = append(indices, idx)
+	}
+	for i := 0; i < len(indices); i++ {
+		for j := i + 1; j < len(indices); j++ {
+			if indices[i] > indices[j] {
+				indices[i], indices[j] = indices[j], indices[i]
+			}
+		}
+	}
+	return indices
+}
+
+func (s *State) SelectedEntries() []logx.Entry {
+	var entries []logx.Entry
+	for _, idx := range s.SelectedIndices() {
+		entries = append(entries, s.Entries[idx])
+	}
+	return entries
+}
+
+func (s *State) DeleteSelected() {
+	indices := s.SelectedIndices()
+	var deleted []int
+	if len(indices) == 0 {
+		if len(s.Filtered) > 0 {
+			idx := s.Filtered[s.Cursor]
+			s.Entries[idx].Deleted = true
+			deleted = []int{idx}
+		}
+	} else {
+		for _, idx := range indices {
+			s.Entries[idx].Deleted = true
+			deleted = append(deleted, idx)
+		}
+		s.ClearSelection()
+	}
+	if len(deleted) > 0 {
+		s.UndoStack = append(s.UndoStack, deleted)
+		s.RedoStack = nil
+	}
+	s.Refilter()
+}
+
+func (s *State) DeleteNote(idx int) {
+	delete(s.Notes, idx)
+	delete(s.ShowingNotes, idx)
+}
+
+func (s *State) Undo() int {
+	if len(s.UndoStack) == 0 {
+		return 0
+	}
+	lastIdx := len(s.UndoStack) - 1
+	deleted := s.UndoStack[lastIdx]
+	s.UndoStack = s.UndoStack[:lastIdx]
+
+	count := 0
+	for _, idx := range deleted {
+		if idx >= 0 && idx < len(s.Entries) && s.Entries[idx].Deleted {
+			s.Entries[idx].Deleted = false
+			count++
+		}
+	}
+	if count > 0 {
+		s.RedoStack = append(s.RedoStack, deleted)
+		s.Refilter()
+	}
+	return count
+}
+
+func (s *State) Redo() int {
+	if len(s.RedoStack) == 0 {
+		return 0
+	}
+	lastIdx := len(s.RedoStack) - 1
+	undone := s.RedoStack[lastIdx]
+	s.RedoStack = s.RedoStack[:lastIdx]
+
+	count := 0
+	for _, idx := range undone {
+		if idx >= 0 && idx < len(s.Entries) && !s.Entries[idx].Deleted {
+			s.Entries[idx].Deleted = true
+			count++
+		}
+	}
+	if count > 0 {
+		s.UndoStack = append(s.UndoStack, undone)
+		s.Refilter()
+	}
+	return count
 }

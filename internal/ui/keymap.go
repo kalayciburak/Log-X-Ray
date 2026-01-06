@@ -23,8 +23,11 @@ const (
 	KeyX            = "x"
 	KeyP            = "p"
 	KeyShiftN       = "N"
+	KeyShiftD       = "D"
+	KeyShiftS       = "S"
 	KeyN            = "n"
 	KeyM            = "m"
+	KeyS            = "s"
 	KeyCtrlV        = "ctrl+v"
 	KeyCtrlC        = "ctrl+c"
 	KeyCtrlL        = "ctrl+l"
@@ -45,6 +48,12 @@ const (
 	KeyPgUp         = "pgup"
 	KeyPgDn         = "pgdown"
 	KeyCtrlR        = "ctrl+r"
+	KeyZ            = "z"
+	KeyO            = "o"
+	KeyShiftT       = "T"
+	KeyShiftW       = "W"
+	KeyU            = "u"
+	KeyShiftU       = "U"
 )
 
 func IsKey(msg tea.KeyMsg, keys ...string) bool {
@@ -74,13 +83,25 @@ func GetHelpSections() []HelpSection {
 				{"j/k", "Move down/up"},
 				{"g/G", "Jump to top/bottom"},
 				{"Enter", "Toggle detail view"},
+				{"z", "Maximize/minimize detail"},
 			},
 		},
 		{
 			Title: "Filter",
 			Items: []HelpItem{
 				{"/", "Start filter"},
-				{"ESC", "Clear filter/Exit"},
+				{"Tab", "Cycle level filter"},
+				{"Ctrl+R", "Clear filter"},
+				{"ESC", "Exit filter mode"},
+			},
+		},
+		{
+			Title: "Selection",
+			Items: []HelpItem{
+				{"s", "Toggle selection"},
+				{"S", "Select all/clear"},
+				{"c", "Copy selected"},
+				{"d", "Delete selected"},
 			},
 		},
 		{
@@ -89,17 +110,29 @@ func GetHelpSections() []HelpSection {
 				{"y", "Copy visible logs + notes"},
 				{"c", "Copy current line"},
 				{"d", "Delete current"},
+				{"u/U", "Undo/redo delete"},
 				{"x", "Clear all"},
 				{"p", "Paste from clipboard"},
+				{"o", "Open file"},
 			},
 		},
 		{
 			Title: "Notes",
 			Items: []HelpItem{
 				{"N", "Write/edit note"},
+				{"D", "Delete note"},
 				{"n", "Show/hide note"},
 				{"m", "Show/hide all notes"},
 				{"]/[", "Next/prev noted line"},
+			},
+		},
+		{
+			Title: "Workspace",
+			Items: []HelpItem{
+				{"T", "New workspace"},
+				{"Tab", "Next workspace"},
+				{"Shift+Tab", "Prev workspace"},
+				{"W", "Close workspace"},
 			},
 		},
 		{
@@ -117,14 +150,6 @@ func GetHelpSections() []HelpSection {
 				{"Ctrl+L", "HTTP status lookup"},
 				{"?", "Toggle help"},
 				{"q", "Quit"},
-			},
-		},
-		{
-			Title: "Filter Syntax",
-			Items: []HelpItem{
-				{"error", "Lines containing 'error'"},
-				{"!debug", "Exclude 'debug' lines"},
-				{"api timeout", "Both terms (AND)"},
 			},
 		},
 	}

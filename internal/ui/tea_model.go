@@ -1,31 +1,127 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/kalayciburak/lx/internal/app"
+	"github.com/kalayciburak/lx/internal/input"
 	"github.com/kalayciburak/lx/internal/logx"
 	"github.com/kalayciburak/lx/internal/lookup"
 	"github.com/kalayciburak/lx/internal/signal"
+)
+
+const (
+	MaxCopyLines   = 1000
+	MaxSelectLines = 3000
 )
 
 func sanitizeForClipboard(s string) string {
 	return strings.ReplaceAll(s, "\x00", "")
 }
 
+func getFileCompletions(pathPrefix string) []string {
+	if pathPrefix == "" {
+		pathPrefix = "."
+	}
+
+	dir := filepath.Dir(pathPrefix)
+	base := filepath.Base(pathPrefix)
+
+	if strings.HasSuffix(pathPrefix, string(filepath.Separator)) || strings.HasSuffix(pathPrefix, "/") {
+		dir = pathPrefix
+		base = ""
+	}
+
+	if strings.HasPrefix(pathPrefix, "~") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			pathPrefix = strings.Replace(pathPrefix, "~", home, 1)
+			dir = filepath.Dir(pathPrefix)
+			base = filepath.Base(pathPrefix)
+			if strings.HasSuffix(pathPrefix, string(filepath.Separator)) || strings.HasSuffix(pathPrefix, "/") {
+				dir = pathPrefix
+				base = ""
+			}
+		}
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var matches []string
+	baseLower := strings.ToLower(base)
+
+	for _, entry := range entries {
+		name := entry.Name()
+		nameLower := strings.ToLower(name)
+
+		if base == "" || strings.HasPrefix(nameLower, baseLower) {
+			fullPath := filepath.Join(dir, name)
+			if entry.IsDir() {
+				fullPath += string(filepath.Separator)
+			}
+			matches = append(matches, fullPath)
+		}
+	}
+
+	sort.Strings(matches)
+	return matches
+}
+
+func completeFilePath(pathPrefix string) (completed string, suggestions []string) {
+	matches := getFileCompletions(pathPrefix)
+
+	if len(matches) == 0 {
+		return pathPrefix, nil
+	}
+
+	if len(matches) == 1 {
+		return matches[0], matches
+	}
+
+	common := matches[0]
+	for _, m := range matches[1:] {
+		for i := 0; i < len(common) && i < len(m); i++ {
+			if common[i] != m[i] {
+				common = common[:i]
+				break
+			}
+		}
+		if len(m) < len(common) {
+			common = common[:len(m)]
+		}
+	}
+
+	if len(common) > len(pathPrefix) {
+		return common, matches
+	}
+
+	return pathPrefix, matches
+}
+
 type Model struct {
-	State  *app.State
-	Width  int
-	Height int
+	Workspaces      []*app.State
+	ActiveWorkspace int
+	State           *app.State
+	Width           int
+	Height          int
 }
 
 func NewModel(state *app.State) Model {
+	workspaces := []*app.State{state}
 	return Model{
-		State:  state,
-		Width:  80,
-		Height: 24,
+		Workspaces:      workspaces,
+		ActiveWorkspace: 0,
+		State:           state,
+		Width:           80,
+		Height:          24,
 	}
 }
 
@@ -75,6 +171,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleLookupMode(msg)
 	case app.ModeSignal:
 		return m.handleSignalMode(msg)
+	case app.ModeOpenFile:
+		return m.handleOpenFileMode(msg)
 	default:
 		return m.handleListMode(msg)
 	}
@@ -155,6 +253,38 @@ func (m Model) handleListMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.State.StatusMsg = "No notes to show"
 		}
+	case IsKey(msg, KeyS):
+		idx := m.State.SelectedIndex()
+		if idx >= 0 {
+			m.State.ToggleSelection(idx)
+			if m.State.IsSelected(idx) {
+				m.State.StatusMsg = "Selected (" + Itoa(m.State.SelectionCount()) + " total)"
+			} else {
+				if m.State.SelectionCount() > 0 {
+					m.State.StatusMsg = Itoa(m.State.SelectionCount()) + " selected"
+				} else {
+					m.State.StatusMsg = ""
+				}
+			}
+		}
+	case IsKey(msg, KeyShiftS):
+		if m.State.SelectionCount() > 0 {
+			m.State.ClearSelection()
+			m.State.StatusMsg = "Selection cleared"
+		} else if len(m.State.Filtered) > MaxSelectLines {
+			m.State.StatusMsg = "Too many lines (" + Itoa(len(m.State.Filtered)) + "). Max " + Itoa(MaxSelectLines)
+		} else {
+			m.State.SelectAll()
+			m.State.StatusMsg = "Selected all (" + Itoa(m.State.SelectionCount()) + ")"
+		}
+	case IsKey(msg, KeyShiftD):
+		idx := m.State.SelectedIndex()
+		if idx >= 0 && m.State.HasNote(idx) {
+			m.State.DeleteNote(idx)
+			m.State.StatusMsg = "Note deleted"
+		} else {
+			m.State.StatusMsg = "No note to delete"
+		}
 	case IsKey(msg, KeyCtrlL):
 		m.State.Mode = app.ModeLookup
 		if entry := m.State.SelectedEntry(); entry != nil {
@@ -180,44 +310,67 @@ func (m Model) handleListMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.State.SignalResult = signal.Diversity(m.State.VisibleEntries())
 		m.State.Mode = app.ModeSignal
 	case IsKey(msg, KeyY):
-		content := app.ExportLogsWithNotes(m.State.VisibleEntries(), m.State.Notes, m.State.Filtered)
-		if err := clipboard.WriteAll(sanitizeForClipboard(content)); err != nil {
-			m.State.StatusMsg = "Clipboard error"
+		if len(m.State.Filtered) > MaxCopyLines {
+			m.State.StatusMsg = "Too many lines (" + Itoa(len(m.State.Filtered)) + "). Max " + Itoa(MaxCopyLines)
 		} else {
-			notesCount := m.State.FilteredNotesCount()
-			if notesCount > 0 {
-				m.State.StatusMsg = "Copied " + Itoa(len(m.State.Filtered)) + " lines + " + Itoa(notesCount) + " notes"
-			} else {
-				m.State.StatusMsg = app.CountExport(len(m.State.Filtered), "line")
-			}
-		}
-	case IsKey(msg, KeyC):
-		idx := m.State.SelectedIndex()
-		if entry := m.State.SelectedEntry(); entry != nil {
-			lineNum := idx + 1
-			var content string
-			if noteObj, ok := m.State.GetNoteObj(idx); ok {
-				levelStr := ""
-				if noteObj.Level != app.NoteLevelNormal {
-					levelStr = noteObj.Level.String() + " "
-				}
-				content = "=== NOTE (lx) ===\n• [line " + Itoa(lineNum) + "] [" + levelStr + noteObj.CreatedAt.Format("15:04:05") + "] " + noteObj.Text + "\n\n=== LOG ===\nline " + Itoa(lineNum) + ": " + app.ExportEntry(entry)
-			} else {
-				content = "line " + Itoa(lineNum) + ": " + app.ExportEntry(entry)
-			}
+			content := app.ExportLogsWithNotes(m.State.VisibleEntries(), m.State.Notes, m.State.Filtered)
 			if err := clipboard.WriteAll(sanitizeForClipboard(content)); err != nil {
 				m.State.StatusMsg = "Clipboard error"
 			} else {
-				if m.State.HasNote(idx) {
-					m.State.StatusMsg = "Copied line " + Itoa(lineNum) + " + note"
+				notesCount := m.State.FilteredNotesCount()
+				if notesCount > 0 {
+					m.State.StatusMsg = "Copied " + Itoa(len(m.State.Filtered)) + " lines + " + Itoa(notesCount) + " notes"
 				} else {
-					m.State.StatusMsg = "Copied line " + Itoa(lineNum)
+					m.State.StatusMsg = app.CountExport(len(m.State.Filtered), "line")
+				}
+			}
+		}
+	case IsKey(msg, KeyC):
+		if m.State.SelectionCount() > MaxCopyLines {
+			m.State.StatusMsg = "Too many selected (" + Itoa(m.State.SelectionCount()) + "). Max " + Itoa(MaxCopyLines)
+		} else if m.State.SelectionCount() > 0 {
+			indices := m.State.SelectedIndices()
+			entries := m.State.SelectedEntries()
+			content := app.ExportLogsWithNotes(entries, m.State.Notes, indices)
+			if err := clipboard.WriteAll(sanitizeForClipboard(content)); err != nil {
+				m.State.StatusMsg = "Clipboard error"
+			} else {
+				m.State.StatusMsg = "Copied " + Itoa(len(indices)) + " selected lines"
+				m.State.ClearSelection()
+			}
+		} else {
+			idx := m.State.SelectedIndex()
+			if entry := m.State.SelectedEntry(); entry != nil {
+				lineNum := idx + 1
+				var content string
+				if noteObj, ok := m.State.GetNoteObj(idx); ok {
+					levelStr := ""
+					if noteObj.Level != app.NoteLevelNormal {
+						levelStr = noteObj.Level.String() + " "
+					}
+					content = "=== NOTE (lx) ===\n• [line " + Itoa(lineNum) + "] [" + levelStr + noteObj.CreatedAt.Format("15:04:05") + "] " + noteObj.Text + "\n\n=== LOG ===\nline " + Itoa(lineNum) + ": " + app.ExportEntry(entry)
+				} else {
+					content = "line " + Itoa(lineNum) + ": " + app.ExportEntry(entry)
+				}
+				if err := clipboard.WriteAll(sanitizeForClipboard(content)); err != nil {
+					m.State.StatusMsg = "Clipboard error"
+				} else {
+					if m.State.HasNote(idx) {
+						m.State.StatusMsg = "Copied line " + Itoa(lineNum) + " + note"
+					} else {
+						m.State.StatusMsg = "Copied line " + Itoa(lineNum)
+					}
 				}
 			}
 		}
 	case IsKey(msg, KeyD):
+		count := m.State.SelectionCount()
 		m.State.DeleteSelected()
-		m.State.StatusMsg = "Deleted"
+		if count > 0 {
+			m.State.StatusMsg = "Deleted " + Itoa(count) + " lines"
+		} else {
+			m.State.StatusMsg = "Deleted"
+		}
 	case IsKey(msg, KeyX):
 		m.State.ClearAll()
 		m.State.StatusMsg = "Cleared all"
@@ -231,6 +384,57 @@ func (m Model) handleListMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.State.LoadFromClipboard(lines)
 				m.State.StatusMsg = "Loaded " + Itoa(len(lines)) + " lines"
 			}
+		}
+	case IsKey(msg, KeyO):
+		m.State.OpenFilePath = ""
+		m.State.OpenFileCursor = 0
+		m.State.Mode = app.ModeOpenFile
+	case IsKey(msg, KeyShiftT):
+		if len(m.Workspaces) >= 10 {
+			m.State.StatusMsg = "Max 10 workspaces allowed"
+		} else {
+			newState := app.NewState(nil, input.ModeClipboard, "")
+			m.Workspaces = append(m.Workspaces, newState)
+			m.ActiveWorkspace = len(m.Workspaces) - 1
+			m.State = m.Workspaces[m.ActiveWorkspace]
+			m.State.StatusMsg = "Workspace " + Itoa(m.ActiveWorkspace+1) + " created"
+		}
+	case IsKey(msg, KeyTab):
+		if len(m.Workspaces) > 1 {
+			m.ActiveWorkspace = (m.ActiveWorkspace + 1) % len(m.Workspaces)
+			m.State = m.Workspaces[m.ActiveWorkspace]
+			m.State.StatusMsg = "Workspace " + Itoa(m.ActiveWorkspace+1) + "/" + Itoa(len(m.Workspaces))
+		}
+	case IsKey(msg, KeyShiftTab):
+		if len(m.Workspaces) > 1 {
+			m.ActiveWorkspace = (m.ActiveWorkspace - 1 + len(m.Workspaces)) % len(m.Workspaces)
+			m.State = m.Workspaces[m.ActiveWorkspace]
+			m.State.StatusMsg = "Workspace " + Itoa(m.ActiveWorkspace+1) + "/" + Itoa(len(m.Workspaces))
+		}
+	case IsKey(msg, KeyShiftW):
+		if len(m.Workspaces) > 1 {
+			m.Workspaces = append(m.Workspaces[:m.ActiveWorkspace], m.Workspaces[m.ActiveWorkspace+1:]...)
+			if m.ActiveWorkspace >= len(m.Workspaces) {
+				m.ActiveWorkspace = len(m.Workspaces) - 1
+			}
+			m.State = m.Workspaces[m.ActiveWorkspace]
+			m.State.StatusMsg = "Workspace closed (" + Itoa(len(m.Workspaces)) + " remaining)"
+		} else {
+			m.State.StatusMsg = "Cannot close last workspace"
+		}
+	case IsKey(msg, KeyU):
+		count := m.State.Undo()
+		if count > 0 {
+			m.State.StatusMsg = "Restored " + Itoa(count) + " lines"
+		} else {
+			m.State.StatusMsg = "Nothing to undo"
+		}
+	case IsKey(msg, KeyShiftU):
+		count := m.State.Redo()
+		if count > 0 {
+			m.State.StatusMsg = "Re-deleted " + Itoa(count) + " lines"
+		} else {
+			m.State.StatusMsg = "Nothing to redo"
 		}
 	}
 	return m, nil
@@ -263,8 +467,18 @@ func (m Model) handleFilterMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case IsKey(msg, KeyEsc, KeyEnter, KeySpace):
+	case IsKey(msg, KeyEsc):
+		if m.State.DetailMaximized {
+			m.State.DetailMaximized = false
+		} else {
+			m.State.Mode = app.ModeList
+		}
+	case IsKey(msg, KeyEnter, KeySpace):
 		m.State.Mode = app.ModeList
+		m.State.DetailMaximized = false
+	case IsKey(msg, KeyZ):
+		m.State.DetailMaximized = !m.State.DetailMaximized
+		m.State.DetailScroll = 0
 	case IsKey(msg, KeyJ, KeyDown):
 		m.State.MoveCursor(1)
 		m.State.DetailScroll = 0
@@ -312,26 +526,40 @@ func (m Model) handleDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.State.ShowingNotes[prevIdx] = true
 		}
 	case IsKey(msg, KeyC):
-		idx := m.State.SelectedIndex()
-		if entry := m.State.SelectedEntry(); entry != nil {
-			lineNum := idx + 1
-			var content string
-			if noteObj, ok := m.State.GetNoteObj(idx); ok {
-				levelStr := ""
-				if noteObj.Level != app.NoteLevelNormal {
-					levelStr = noteObj.Level.String() + " "
-				}
-				content = "=== NOTE (lx) ===\n• [line " + Itoa(lineNum) + "] [" + levelStr + noteObj.CreatedAt.Format("15:04:05") + "] " + noteObj.Text + "\n\n=== LOG ===\nline " + Itoa(lineNum) + ": " + app.ExportEntry(entry)
-			} else {
-				content = "line " + Itoa(lineNum) + ": " + app.ExportEntry(entry)
-			}
+		if m.State.SelectionCount() > MaxCopyLines {
+			m.State.StatusMsg = "Too many selected (" + Itoa(m.State.SelectionCount()) + "). Max " + Itoa(MaxCopyLines)
+		} else if m.State.SelectionCount() > 0 {
+			indices := m.State.SelectedIndices()
+			entries := m.State.SelectedEntries()
+			content := app.ExportLogsWithNotes(entries, m.State.Notes, indices)
 			if err := clipboard.WriteAll(sanitizeForClipboard(content)); err != nil {
 				m.State.StatusMsg = "Clipboard error"
 			} else {
-				if m.State.HasNote(idx) {
-					m.State.StatusMsg = "Copied line " + Itoa(lineNum) + " + note"
+				m.State.StatusMsg = "Copied " + Itoa(len(indices)) + " selected lines"
+				m.State.ClearSelection()
+			}
+		} else {
+			idx := m.State.SelectedIndex()
+			if entry := m.State.SelectedEntry(); entry != nil {
+				lineNum := idx + 1
+				var content string
+				if noteObj, ok := m.State.GetNoteObj(idx); ok {
+					levelStr := ""
+					if noteObj.Level != app.NoteLevelNormal {
+						levelStr = noteObj.Level.String() + " "
+					}
+					content = "=== NOTE (lx) ===\n• [line " + Itoa(lineNum) + "] [" + levelStr + noteObj.CreatedAt.Format("15:04:05") + "] " + noteObj.Text + "\n\n=== LOG ===\nline " + Itoa(lineNum) + ": " + app.ExportEntry(entry)
 				} else {
-					m.State.StatusMsg = "Copied line " + Itoa(lineNum)
+					content = "line " + Itoa(lineNum) + ": " + app.ExportEntry(entry)
+				}
+				if err := clipboard.WriteAll(sanitizeForClipboard(content)); err != nil {
+					m.State.StatusMsg = "Clipboard error"
+				} else {
+					if m.State.HasNote(idx) {
+						m.State.StatusMsg = "Copied line " + Itoa(lineNum) + " + note"
+					} else {
+						m.State.StatusMsg = "Copied line " + Itoa(lineNum)
+					}
 				}
 			}
 		}
@@ -353,20 +581,29 @@ func (m Model) handleDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.State.Cursor = len(m.State.Filtered) - 1
 		}
 	case IsKey(msg, KeyY):
-		content := app.ExportLogsWithNotes(m.State.VisibleEntries(), m.State.Notes, m.State.Filtered)
-		if err := clipboard.WriteAll(sanitizeForClipboard(content)); err != nil {
-			m.State.StatusMsg = "Clipboard error"
+		if len(m.State.Filtered) > MaxCopyLines {
+			m.State.StatusMsg = "Too many lines (" + Itoa(len(m.State.Filtered)) + "). Max " + Itoa(MaxCopyLines)
 		} else {
-			notesCount := m.State.FilteredNotesCount()
-			if notesCount > 0 {
-				m.State.StatusMsg = "Copied " + Itoa(len(m.State.Filtered)) + " lines + " + Itoa(notesCount) + " notes"
+			content := app.ExportLogsWithNotes(m.State.VisibleEntries(), m.State.Notes, m.State.Filtered)
+			if err := clipboard.WriteAll(sanitizeForClipboard(content)); err != nil {
+				m.State.StatusMsg = "Clipboard error"
 			} else {
-				m.State.StatusMsg = app.CountExport(len(m.State.Filtered), "line")
+				notesCount := m.State.FilteredNotesCount()
+				if notesCount > 0 {
+					m.State.StatusMsg = "Copied " + Itoa(len(m.State.Filtered)) + " lines + " + Itoa(notesCount) + " notes"
+				} else {
+					m.State.StatusMsg = app.CountExport(len(m.State.Filtered), "line")
+				}
 			}
 		}
 	case IsKey(msg, KeyD):
+		count := m.State.SelectionCount()
 		m.State.DeleteSelected()
-		m.State.StatusMsg = "Deleted"
+		if count > 0 {
+			m.State.StatusMsg = "Deleted " + Itoa(count) + " lines"
+		} else {
+			m.State.StatusMsg = "Deleted"
+		}
 	case IsKey(msg, KeySlash):
 		m.State.Mode = app.ModeFilter
 	case IsKey(msg, KeyCtrlR):
@@ -400,6 +637,103 @@ func (m Model) handleDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.State.Mode = app.ModeSignal
 	case IsKey(msg, KeyQuestion):
 		m.State.Mode = app.ModeHelp
+	case IsKey(msg, KeyShiftT):
+		if len(m.Workspaces) >= 10 {
+			m.State.StatusMsg = "Max 10 workspaces allowed"
+		} else {
+			newState := app.NewState(nil, input.ModeClipboard, "")
+			m.Workspaces = append(m.Workspaces, newState)
+			m.ActiveWorkspace = len(m.Workspaces) - 1
+			m.State = m.Workspaces[m.ActiveWorkspace]
+			m.State.StatusMsg = "Workspace " + Itoa(m.ActiveWorkspace+1) + " created"
+		}
+	case IsKey(msg, KeyTab):
+		if len(m.Workspaces) > 1 {
+			m.ActiveWorkspace = (m.ActiveWorkspace + 1) % len(m.Workspaces)
+			m.State = m.Workspaces[m.ActiveWorkspace]
+			m.State.StatusMsg = "Workspace " + Itoa(m.ActiveWorkspace+1) + "/" + Itoa(len(m.Workspaces))
+		}
+	case IsKey(msg, KeyShiftTab):
+		if len(m.Workspaces) > 1 {
+			m.ActiveWorkspace = (m.ActiveWorkspace - 1 + len(m.Workspaces)) % len(m.Workspaces)
+			m.State = m.Workspaces[m.ActiveWorkspace]
+			m.State.StatusMsg = "Workspace " + Itoa(m.ActiveWorkspace+1) + "/" + Itoa(len(m.Workspaces))
+		}
+	case IsKey(msg, KeyShiftW):
+		if len(m.Workspaces) > 1 {
+			m.Workspaces = append(m.Workspaces[:m.ActiveWorkspace], m.Workspaces[m.ActiveWorkspace+1:]...)
+			if m.ActiveWorkspace >= len(m.Workspaces) {
+				m.ActiveWorkspace = len(m.Workspaces) - 1
+			}
+			m.State = m.Workspaces[m.ActiveWorkspace]
+			m.State.StatusMsg = "Workspace closed (" + Itoa(len(m.Workspaces)) + " remaining)"
+		} else {
+			m.State.StatusMsg = "Cannot close last workspace"
+		}
+	case IsKey(msg, KeyS):
+		idx := m.State.SelectedIndex()
+		if idx >= 0 {
+			m.State.ToggleSelection(idx)
+			if m.State.IsSelected(idx) {
+				m.State.StatusMsg = "Selected (" + Itoa(m.State.SelectionCount()) + " total)"
+			} else {
+				if m.State.SelectionCount() > 0 {
+					m.State.StatusMsg = Itoa(m.State.SelectionCount()) + " selected"
+				} else {
+					m.State.StatusMsg = ""
+				}
+			}
+		}
+	case IsKey(msg, KeyShiftS):
+		if m.State.SelectionCount() > 0 {
+			m.State.ClearSelection()
+			m.State.StatusMsg = "Selection cleared"
+		} else if len(m.State.Filtered) > MaxSelectLines {
+			m.State.StatusMsg = "Too many lines (" + Itoa(len(m.State.Filtered)) + "). Max " + Itoa(MaxSelectLines)
+		} else {
+			m.State.SelectAll()
+			m.State.StatusMsg = "Selected all (" + Itoa(m.State.SelectionCount()) + ")"
+		}
+	case IsKey(msg, KeyShiftD):
+		idx := m.State.SelectedIndex()
+		if idx >= 0 && m.State.HasNote(idx) {
+			m.State.DeleteNote(idx)
+			m.State.StatusMsg = "Note deleted"
+		} else {
+			m.State.StatusMsg = "No note to delete"
+		}
+	case IsKey(msg, KeyX):
+		m.State.ClearAll()
+		m.State.StatusMsg = "Cleared all"
+	case IsKey(msg, KeyP, KeyCtrlV):
+		content, err := clipboard.ReadAll()
+		if err != nil {
+			m.State.StatusMsg = "Clipboard error"
+		} else {
+			lines := splitLines(content)
+			if len(lines) > 0 {
+				m.State.LoadFromClipboard(lines)
+				m.State.StatusMsg = "Loaded " + Itoa(len(lines)) + " lines"
+			}
+		}
+	case IsKey(msg, KeyO):
+		m.State.OpenFilePath = ""
+		m.State.OpenFileCursor = 0
+		m.State.Mode = app.ModeOpenFile
+	case IsKey(msg, KeyU):
+		count := m.State.Undo()
+		if count > 0 {
+			m.State.StatusMsg = "Restored " + Itoa(count) + " lines"
+		} else {
+			m.State.StatusMsg = "Nothing to undo"
+		}
+	case IsKey(msg, KeyShiftU):
+		count := m.State.Redo()
+		if count > 0 {
+			m.State.StatusMsg = "Re-deleted " + Itoa(count) + " lines"
+		} else {
+			m.State.StatusMsg = "Nothing to redo"
+		}
 	case IsKey(msg, KeyCtrlC):
 		return m, tea.Quit
 	case IsKey(msg, KeyQ):
@@ -430,6 +764,34 @@ func (m Model) handleNotesMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch {
+	case IsKey(msg, KeyCtrlV):
+		content, err := clipboard.ReadAll()
+		if err != nil {
+			m.State.StatusMsg = "Clipboard error"
+		} else {
+			content = sanitizeForClipboard(content)
+			content = strings.ReplaceAll(content, "\n", " ")
+			content = strings.ReplaceAll(content, "\r", " ")
+			content = strings.ReplaceAll(content, "\t", " ")
+			toInsert := []rune(content)
+			remaining := 100 - len(runes)
+			if remaining > 0 {
+				if len(toInsert) > remaining {
+					toInsert = toInsert[:remaining]
+					m.State.StatusMsg = "Pasted (truncated)"
+				} else {
+					m.State.StatusMsg = "Pasted"
+				}
+				newRunes := make([]rune, 0, len(runes)+len(toInsert))
+				newRunes = append(newRunes, runes[:cursorPos]...)
+				newRunes = append(newRunes, toInsert...)
+				newRunes = append(newRunes, runes[cursorPos:]...)
+				m.State.CurrentNote = string(newRunes)
+				m.State.NoteCursorPos = cursorPos + len(toInsert)
+			} else {
+				m.State.StatusMsg = "Note full"
+			}
+		}
 	case IsKey(msg, KeyEsc):
 		m.State.SetNote(m.State.NoteLineIdx, m.State.CurrentNote)
 		if m.State.CurrentNote != "" {
@@ -484,7 +846,7 @@ func (m Model) handleNotesMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		char := msg.String()
 		charRunes := []rune(char)
-		if len(charRunes) == 1 && len(runes) < 255 {
+		if len(charRunes) == 1 && len(runes) < 100 {
 			newRunes := make([]rune, 0, len(runes)+1)
 			newRunes = append(newRunes, runes[:cursorPos]...)
 			newRunes = append(newRunes, charRunes[0])
@@ -510,7 +872,7 @@ func (m Model) handleLookupMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.State.LookupCursor > 0 {
 			m.State.LookupCursor--
 		}
-	case IsKey(msg, KeyEnter):
+	case IsKey(msg, KeyEnter, KeySpace, KeyC):
 		if result := m.State.SelectedLookupResult(); result != nil {
 			content := Itoa(result.Code) + " " + result.Name + "\n" + result.Description + "\nExample: " + result.Example
 			if err := clipboard.WriteAll(sanitizeForClipboard(content)); err != nil {
@@ -518,6 +880,9 @@ func (m Model) handleLookupMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				m.State.StatusMsg = "Copied: " + result.Name
 			}
+			m.State.Mode = app.ModeList
+			m.State.LookupQuery = ""
+			m.State.LookupResults = nil
 		}
 	case IsKey(msg, KeyBackspace):
 		if len(m.State.LookupQuery) > 0 {
@@ -573,6 +938,109 @@ func (m Model) handleSignalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) handleOpenFileMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	runes := []rune(m.State.OpenFilePath)
+	cursorPos := m.State.OpenFileCursor
+
+	if cursorPos > len(runes) {
+		cursorPos = len(runes)
+	}
+	if cursorPos < 0 {
+		cursorPos = 0
+	}
+
+	clearSuggestions := func() {
+		m.State.OpenFileSuggestions = nil
+		m.State.OpenFileSuggIdx = 0
+	}
+
+	switch {
+	case IsKey(msg, KeyEsc):
+		m.State.Mode = app.ModeList
+		m.State.OpenFilePath = ""
+		clearSuggestions()
+	case IsKey(msg, KeyEnter):
+		if len(m.State.OpenFileSuggestions) > 0 && m.State.OpenFileSuggIdx < len(m.State.OpenFileSuggestions) {
+			selected := m.State.OpenFileSuggestions[m.State.OpenFileSuggIdx]
+			if strings.HasSuffix(selected, string(filepath.Separator)) {
+				m.State.OpenFilePath = selected
+				m.State.OpenFileCursor = len([]rune(selected))
+				clearSuggestions()
+				return m, nil
+			}
+			m.State.OpenFilePath = selected
+		}
+		if m.State.OpenFilePath != "" {
+			if err := m.State.LoadFromFile(m.State.OpenFilePath); err != nil {
+				m.State.StatusMsg = "Error: " + err.Error()
+			} else {
+				m.State.StatusMsg = "Loaded " + Itoa(len(m.State.Entries)) + " lines"
+			}
+		}
+		m.State.Mode = app.ModeList
+		m.State.OpenFilePath = ""
+		clearSuggestions()
+	case IsKey(msg, KeyTab):
+		completed, suggestions := completeFilePath(m.State.OpenFilePath)
+		m.State.OpenFilePath = completed
+		m.State.OpenFileCursor = len([]rune(completed))
+		m.State.OpenFileSuggestions = suggestions
+		m.State.OpenFileSuggIdx = 0
+	case IsKey(msg, KeyDown):
+		if len(m.State.OpenFileSuggestions) > 0 {
+			m.State.OpenFileSuggIdx = (m.State.OpenFileSuggIdx + 1) % len(m.State.OpenFileSuggestions)
+		}
+	case IsKey(msg, KeyUp):
+		if len(m.State.OpenFileSuggestions) > 0 {
+			m.State.OpenFileSuggIdx = (m.State.OpenFileSuggIdx - 1 + len(m.State.OpenFileSuggestions)) % len(m.State.OpenFileSuggestions)
+		}
+	case IsKey(msg, KeyLeft):
+		if cursorPos > 0 {
+			m.State.OpenFileCursor = cursorPos - 1
+		}
+		clearSuggestions()
+	case IsKey(msg, KeyRight):
+		if cursorPos < len(runes) {
+			m.State.OpenFileCursor = cursorPos + 1
+		}
+		clearSuggestions()
+	case IsKey(msg, KeyHome):
+		m.State.OpenFileCursor = 0
+		clearSuggestions()
+	case IsKey(msg, KeyEnd):
+		m.State.OpenFileCursor = len(runes)
+		clearSuggestions()
+	case IsKey(msg, KeyBackspace):
+		if cursorPos > 0 {
+			newRunes := append(runes[:cursorPos-1], runes[cursorPos:]...)
+			m.State.OpenFilePath = string(newRunes)
+			m.State.OpenFileCursor = cursorPos - 1
+		}
+		clearSuggestions()
+	case IsKey(msg, KeyDelete):
+		if cursorPos < len(runes) {
+			newRunes := append(runes[:cursorPos], runes[cursorPos+1:]...)
+			m.State.OpenFilePath = string(newRunes)
+		}
+		clearSuggestions()
+	case IsKey(msg, KeyCtrlC):
+		return m, tea.Quit
+	default:
+		char := msg.String()
+		charRunes := []rune(char)
+		if len(charRunes) == 1 && len(runes) < 512 {
+			newRunes := make([]rune, 0, len(runes)+1)
+			newRunes = append(newRunes, runes[:cursorPos]...)
+			newRunes = append(newRunes, charRunes[0])
+			newRunes = append(newRunes, runes[cursorPos:]...)
+			m.State.OpenFilePath = string(newRunes)
+			m.State.OpenFileCursor = cursorPos + 1
+		}
+		clearSuggestions()
+	}
+	return m, nil
+}
+
 func (m *Model) updateSignalForCurrentEntry() {
 	if m.State.SignalResult == nil {
 		return
@@ -615,6 +1083,8 @@ func (m Model) View() string {
 		content = m.renderWithFilter(w, h)
 	case app.ModeDetail:
 		content = m.renderWithDetail(w, h)
+	case app.ModeOpenFile:
+		content = m.renderWithOpenFile(w, h)
 	default:
 		content = m.renderNormal(w, h)
 	}
@@ -622,8 +1092,8 @@ func (m Model) View() string {
 }
 
 func (m Model) renderNormal(w, h int) string {
-	titleBar := RenderTitleBar(m.State, w)
-	footer := RenderFooter(int(m.State.Mode), m.State.StatusMsg, w)
+	titleBar := RenderTitleBar(m.State, m.ActiveWorkspace, len(m.Workspaces), w)
+	footer := RenderFooter(int(m.State.Mode), m.State.StatusMsg, m.State.SelectionCount(), w)
 	listH := h - 2
 	if listH < 1 {
 		listH = 1
@@ -638,13 +1108,23 @@ func (m Model) renderNormal(w, h int) string {
 }
 
 func (m Model) renderWithDetail(w, h int) string {
-	titleBar := RenderTitleBar(m.State, w)
-	footer := RenderFooter(int(m.State.Mode), m.State.StatusMsg, w)
+	titleBar := RenderTitleBar(m.State, m.ActiveWorkspace, len(m.Workspaces), w)
+	footer := RenderFooter(int(m.State.Mode), m.State.StatusMsg, m.State.SelectionCount(), w)
+	entry := m.State.SelectedEntry()
+
+	if m.State.DetailMaximized {
+		detailH := h - 2
+		if detailH < 6 {
+			detailH = 6
+		}
+		detail := RenderDetail(entry, detailH, w, m.State.DetailScroll)
+		return titleBar + "\n" + detail + "\n" + footer
+	}
+
 	contentH := h - 3
 	if contentH < 6 {
 		contentH = 6
 	}
-	entry := m.State.SelectedEntry()
 	detailH := calcDetailHeight(entry, contentH, w)
 	listH := contentH - detailH
 	if listH < 3 {
@@ -665,8 +1145,8 @@ func (m Model) renderWithDetail(w, h int) string {
 }
 
 func (m Model) renderWithHelp(w, h int) string {
-	titleBar := RenderTitleBar(m.State, w)
-	footer := RenderFooter(int(m.State.Mode), m.State.StatusMsg, w)
+	titleBar := RenderTitleBar(m.State, m.ActiveWorkspace, len(m.Workspaces), w)
+	footer := RenderFooter(int(m.State.Mode), m.State.StatusMsg, m.State.SelectionCount(), w)
 	helpH := h - 2
 	help := RenderHelp(helpH, w)
 	return titleBar + "\n" + help + "\n" + footer
@@ -706,6 +1186,14 @@ func (m Model) renderWithFilter(w, h int) string {
 	bg := m.renderNormal(w, h)
 	bgLines := splitLines(bg)
 	modal := RenderFilterModal(m.State.FilterQuery, int(m.State.LevelFilter), h-2, w)
+	modalLines := splitLines(modal)
+	return overlayModal(bgLines, modalLines, w, h-2)
+}
+
+func (m Model) renderWithOpenFile(w, h int) string {
+	bg := m.renderNormal(w, h)
+	bgLines := splitLines(bg)
+	modal := RenderOpenFileModal(m.State.OpenFilePath, m.State.OpenFileCursor, m.State.OpenFileSuggestions, m.State.OpenFileSuggIdx, h-2, w)
 	modalLines := splitLines(modal)
 	return overlayModal(bgLines, modalLines, w, h-2)
 }
