@@ -1076,7 +1076,7 @@ func RenderLookupModal(query string, results []lookup.StatusInfo, cursor, height
 	return result.String()
 }
 
-func RenderFilterModal(query string, levelFilter int, height, width int) string {
+func RenderFilterModal(query string, levelFilter int, height, width int, textFilterDisabled bool) string {
 	modalW := 50
 	if modalW > width-8 {
 		modalW = width - 8
@@ -1096,6 +1096,9 @@ func RenderFilterModal(query string, levelFilter int, height, width int) string 
 	var content strings.Builder
 
 	headerText := " FILTER "
+	if textFilterDisabled {
+		headerText = " LEVEL FILTER "
+	}
 	headerPadTotal := modalW - 2 - len(headerText)
 	leftPad := headerPadTotal / 2
 	rightPad := headerPadTotal - leftPad
@@ -1133,42 +1136,44 @@ func RenderFilterModal(query string, levelFilter int, height, width int) string 
 
 	content.WriteString(StyleFrameBorder.Render("│") + pad(modalW-2) + StyleFrameBorder.Render("│") + "\n")
 
-	content.WriteString(StyleFrameBorder.Render("├" + strings.Repeat("─", modalW-2) + "┤") + "\n")
+	if !textFilterDisabled {
+		content.WriteString(StyleFrameBorder.Render("├" + strings.Repeat("─", modalW-2) + "┤") + "\n")
 
-	searchLabel := " Text Filter "
-	content.WriteString(StyleFrameBorder.Render("│") + StyleModalText.Render(searchLabel) + pad(innerW-len(searchLabel)+1) + pad(1) + StyleFrameBorder.Render("│") + "\n")
+		searchLabel := " Text Filter "
+		content.WriteString(StyleFrameBorder.Render("│") + StyleModalText.Render(searchLabel) + pad(innerW-len(searchLabel)+1) + pad(1) + StyleFrameBorder.Render("│") + "\n")
 
-	displayQuery := query
-	maxQueryW := innerW - 4
-	if len(query) > maxQueryW {
-		displayQuery = "…" + query[len(query)-maxQueryW+1:]
-	}
-	inputLine := StyleModalAccent.Render("> ") + StyleModalHighlight.Render(displayQuery) + StyleCursorIndicator.Render("█")
-	inputLineW := lipgloss.Width(inputLine)
-	inputPadW := innerW - inputLineW
-	if inputPadW < 0 {
-		inputPadW = 0
-	}
-	content.WriteString(StyleFrameBorder.Render("│") + pad(1) + inputLine + pad(inputPadW) + pad(1) + StyleFrameBorder.Render("│") + "\n")
-
-	content.WriteString(StyleFrameBorder.Render("│") + pad(modalW-2) + StyleFrameBorder.Render("│") + "\n")
-
-	syntaxHints := []struct {
-		example string
-		desc    string
-	}{
-		{"error", "contains 'error'"},
-		{"!debug", "exclude 'debug'"},
-		{"api timeout", "both terms (AND)"},
-	}
-	for _, hint := range syntaxHints {
-		hintLine := StyleModalHighlight.Render(PadRight(hint.example, 12)) + StyleModalText.Render(hint.desc)
-		hintLineW := lipgloss.Width(hintLine)
-		hintPadW := innerW - hintLineW
-		if hintPadW < 0 {
-			hintPadW = 0
+		displayQuery := query
+		maxQueryW := innerW - 4
+		if len(query) > maxQueryW {
+			displayQuery = "…" + query[len(query)-maxQueryW+1:]
 		}
-		content.WriteString(StyleFrameBorder.Render("│") + pad(1) + hintLine + pad(hintPadW) + pad(1) + StyleFrameBorder.Render("│") + "\n")
+		inputLine := StyleModalAccent.Render("> ") + StyleModalHighlight.Render(displayQuery) + StyleCursorIndicator.Render("█")
+		inputLineW := lipgloss.Width(inputLine)
+		inputPadW := innerW - inputLineW
+		if inputPadW < 0 {
+			inputPadW = 0
+		}
+		content.WriteString(StyleFrameBorder.Render("│") + pad(1) + inputLine + pad(inputPadW) + pad(1) + StyleFrameBorder.Render("│") + "\n")
+
+		content.WriteString(StyleFrameBorder.Render("│") + pad(modalW-2) + StyleFrameBorder.Render("│") + "\n")
+
+		syntaxHints := []struct {
+			example string
+			desc    string
+		}{
+			{"error", "contains 'error'"},
+			{"!debug", "exclude 'debug'"},
+			{"api timeout", "both terms (AND)"},
+		}
+		for _, hint := range syntaxHints {
+			hintLine := StyleModalHighlight.Render(PadRight(hint.example, 12)) + StyleModalText.Render(hint.desc)
+			hintLineW := lipgloss.Width(hintLine)
+			hintPadW := innerW - hintLineW
+			if hintPadW < 0 {
+				hintPadW = 0
+			}
+			content.WriteString(StyleFrameBorder.Render("│") + pad(1) + hintLine + pad(hintPadW) + pad(1) + StyleFrameBorder.Render("│") + "\n")
+		}
 	}
 
 	content.WriteString(StyleFrameBorder.Render("├" + strings.Repeat("─", modalW-2) + "┤") + "\n")

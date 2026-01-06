@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	MaxCopyLines   = 1000
-	MaxSelectLines = 3000
+	MaxCopyLines       = 1000
+	MaxSelectLines     = 3000
+	MaxTextFilterLines = 15000
 )
 
 func sanitizeForClipboard(s string) string {
@@ -441,25 +442,35 @@ func (m Model) handleListMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleFilterMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	tooManyLines := len(m.State.Entries) > MaxTextFilterLines
+
 	switch {
 	case IsKey(msg, KeyEsc):
 		m.State.Mode = app.ModeList
 	case IsKey(msg, KeyEnter):
 		m.State.Mode = app.ModeList
-		m.State.Refilter()
+		if !tooManyLines || m.State.FilterQuery == "" {
+			m.State.Refilter()
+		}
 	case IsKey(msg, KeyTab):
 		m.State.CycleLevelFilter()
 	case IsKey(msg, KeyBackspace):
 		if len(m.State.FilterQuery) > 0 {
 			m.State.FilterQuery = m.State.FilterQuery[:len(m.State.FilterQuery)-1]
-			m.State.Refilter()
+			if !tooManyLines {
+				m.State.Refilter()
+			}
 		}
 	case IsKey(msg, KeyCtrlC):
 		return m, tea.Quit
 	default:
 		if len(msg.String()) == 1 || msg.String() == " " {
-			m.State.FilterQuery += msg.String()
-			m.State.Refilter()
+			if tooManyLines {
+				m.State.StatusMsg = "Text filter disabled (>" + Itoa(MaxTextFilterLines) + " lines)"
+			} else {
+				m.State.FilterQuery += msg.String()
+				m.State.Refilter()
+			}
 		}
 	}
 	return m, nil
@@ -1185,7 +1196,8 @@ func (m Model) renderWithSignal(w, h int) string {
 func (m Model) renderWithFilter(w, h int) string {
 	bg := m.renderNormal(w, h)
 	bgLines := splitLines(bg)
-	modal := RenderFilterModal(m.State.FilterQuery, int(m.State.LevelFilter), h-2, w)
+	textFilterDisabled := len(m.State.Entries) > MaxTextFilterLines
+	modal := RenderFilterModal(m.State.FilterQuery, int(m.State.LevelFilter), h-2, w, textFilterDisabled)
 	modalLines := splitLines(modal)
 	return overlayModal(bgLines, modalLines, w, h-2)
 }
