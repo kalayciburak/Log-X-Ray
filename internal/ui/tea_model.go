@@ -35,6 +35,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
+	}
+	return m, nil
+}
+
+func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		if m.State.Mode == app.ModeList || m.State.Mode == app.ModeDetail {
+			m.State.MoveCursor(-3)
+		}
+	case tea.MouseButtonWheelDown:
+		if m.State.Mode == app.ModeList || m.State.Mode == app.ModeDetail {
+			m.State.MoveCursor(3)
+		}
 	}
 	return m, nil
 }

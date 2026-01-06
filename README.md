@@ -2,7 +2,7 @@
 
 A fast, ephemeral log viewer with offline analytics. Paste a prod error, get clarity in 30 seconds.
 
-![lx demo](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go&logoColor=white)
+![lx demo](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
 ## Features
@@ -38,7 +38,7 @@ go install github.com/kalayciburak/lx/cmd/lx@latest
 
 ### Requirements
 
-- Go 1.21+
+- Go 1.25+
 - Terminal with Unicode support
 
 ## Usage
@@ -70,64 +70,64 @@ lx
 
 ### Navigation
 
-| Key | Action |
-|-----|--------|
-| `j` / `k` | Move down / up |
+| Key       | Action               |
+| --------- | -------------------- |
+| `j` / `k` | Move down / up       |
 | `g` / `G` | Jump to top / bottom |
-| `Enter` | Toggle detail view |
+| `Enter`   | Toggle detail view   |
 
 ### Filter
 
-| Key | Action |
-|-----|--------|
-| `/` | Open filter modal |
+| Key   | Action                                         |
+| ----- | ---------------------------------------------- |
+| `/`   | Open filter modal                              |
 | `Tab` | Cycle level filter (ALL/ERROR/WARN/INFO/DEBUG) |
-| `ESC` | Apply filter / exit |
+| `ESC` | Apply filter / exit                            |
 
 ### Signal Booster (Analytics)
 
-| Key | Action |
-|-----|--------|
-| `1` | Error frequency - top errors by count |
+| Key | Action                                          |
+| --- | ----------------------------------------------- |
+| `1` | Error frequency - top errors by count           |
 | `2` | Lifetime - first/last seen for selected message |
-| `3` | Burst detector - detect error spikes |
-| `4` | Diversity - error variety analysis |
+| `3` | Burst detector - detect error spikes            |
+| `4` | Diversity - error variety analysis              |
 
 ### Notes
 
-| Key | Action |
-|-----|--------|
-| `N` | Write/edit note for current line |
-| `n` | Toggle note display |
-| `m` | Show/hide all notes |
-| `]` / `[` | Jump to next/prev noted line |
+| Key       | Action                           |
+| --------- | -------------------------------- |
+| `N`       | Write/edit note for current line |
+| `n`       | Toggle note display              |
+| `m`       | Show/hide all notes              |
+| `]` / `[` | Jump to next/prev noted line     |
 
 ### Copy & Edit
 
-| Key | Action |
-|-----|--------|
+| Key | Action                                  |
+| --- | --------------------------------------- |
 | `c` | Copy current line (with note if exists) |
-| `y` | Yank all visible logs + notes |
-| `p` | Paste from clipboard |
-| `d` | Delete current line |
-| `x` | Clear all |
+| `y` | Yank all visible logs + notes           |
+| `p` | Paste from clipboard                    |
+| `d` | Delete current line                     |
+| `x` | Clear all                               |
 
 ### Tools
 
-| Key | Action |
-|-----|--------|
+| Key      | Action                  |
+| -------- | ----------------------- |
 | `Ctrl+L` | HTTP status code lookup |
-| `?` | Toggle help |
-| `q` | Quit |
+| `?`      | Toggle help             |
+| `q`      | Quit                    |
 
 ## Filter Syntax
 
-| Pattern | Meaning |
-|---------|---------|
-| `error` | Lines containing "error" |
-| `!debug` | Lines NOT containing "debug" |
-| `error timeout` | Lines with both terms (AND) |
-| `error !debug` | "error" but NOT "debug" |
+| Pattern         | Meaning                      |
+| --------------- | ---------------------------- |
+| `error`         | Lines containing "error"     |
+| `!debug`        | Lines NOT containing "debug" |
+| `error timeout` | Lines with both terms (AND)  |
+| `error !debug`  | "error" but NOT "debug"      |
 
 All filters are **case-insensitive**.
 
@@ -136,7 +136,9 @@ All filters are **case-insensitive**.
 Offline analytics that run entirely in RAM - no network, no database.
 
 ### 1. Error Frequency (`1`)
+
 Shows top 10 most frequent ERROR messages:
+
 ```
 TOP ERROR SIGNALS
 
@@ -146,7 +148,9 @@ connection pool exhausted         x4
 ```
 
 ### 2. Lifetime Analysis (`2`)
+
 Shows when a specific error first/last appeared:
+
 ```
 SIGNAL LIFETIME
 
@@ -157,7 +161,9 @@ Occurrences: 15
 ```
 
 ### 3. Burst Detector (`3`)
+
 Detects unusual error spikes:
+
 ```
 BURST ANALYSIS
 
@@ -167,7 +173,9 @@ BURST DETECTED
 ```
 
 ### 4. Error Diversity (`4`)
+
 Analyzes error variety:
+
 ```
 ERROR DIVERSITY
 
@@ -188,6 +196,7 @@ Annotate log lines during investigation:
 4. Notes are included when copying with `y` or `c`
 
 Export format:
+
 ```
 === NOTE (lx) ===
 • [line 42] This is the root cause
@@ -199,19 +208,23 @@ line 42: {"level":"error","msg":"connection refused"}
 ## Supported Log Formats
 
 ### JSON Logs
+
 ```json
 {"msg":"connection failed","level":"error","service":"api"}
 {"message":"request completed","severity":"info","duration_ms":42}
 ```
 
 ### Plain Text
+
 ```
 2024-01-15 10:30:45 ERROR Database connection timeout
 [WARN] Disk space low on /dev/sda1
 ```
 
 ### Stack Traces
+
 Auto-detected patterns:
+
 - Java: `at com.example.Foo.bar(Foo.java:123)`
 - Go: `main.go:45`, `goroutine 1 [running]`
 - Python: `File "/app/main.py", line 42`
@@ -221,11 +234,13 @@ Auto-detected patterns:
 **lx is not a log viewer. It's a thinking accelerator.**
 
 When debugging at 3 AM, you don't need:
+
 - A database to query later
 - Config files to manage
 - State to persist
 
 You need:
+
 1. Copy error from Slack
 2. Understand what happened
 3. Add notes during investigation
